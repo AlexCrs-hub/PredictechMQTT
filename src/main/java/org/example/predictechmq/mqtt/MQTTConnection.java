@@ -1,17 +1,29 @@
 package org.example.predictechmq.mqtt;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hivemq.client.mqtt.MqttClient;
 import com.hivemq.client.mqtt.mqtt5.Mqtt5BlockingClient;
+import org.example.predictechmq.api.ApiCommunication;
+import org.example.predictechmq.model.Reading;
+import org.example.predictechmq.redis.RedisMessagePublisher;
 import org.example.predictechmq.socket.WebSocketBridge;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
 
 
+import java.io.IOException;
+
 import static com.hivemq.client.mqtt.MqttGlobalPublishFilter.ALL;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+@Component
 public class MQTTConnection {
+
+    @Autowired
+    private RedisMessagePublisher redisPublisher;
 
     private String host;
     private int port;
@@ -20,7 +32,11 @@ public class MQTTConnection {
     private String password;
     private Mqtt5BlockingClient client;
 
-    public MQTTConnection(String host, int port, String topic, String username, String password) {
+    public MQTTConnection( @Value("${mqtt.host}") String host,
+                           @Value("${mqtt.port}") int port,
+                           @Value("${mqtt.topic}") String topic,
+                           @Value("${mqtt.username}") String username,
+                           @Value("${mqtt.password}") String password) {
         this.host = host;
         this.port = port;
         this.topic = topic;
@@ -52,8 +68,24 @@ public class MQTTConnection {
 
         client.toAsync().publishes(ALL, publish -> {
             String message = String.valueOf(UTF_8.decode(publish.getPayload().get()));
-            System.out.println(message);
-            WebSocketBridge.send(message);
+            ObjectMapper mapper = new ObjectMapper();
+            try {
+                JsonNode root = mapper.readTree(message);
+                ApiCommunication api = new ApiCommunication();
+                root.fields().forEachRemaining(entry -> {
+                    String sensor = entry.getKey();
+                    double measurement = entry.getValue().asDouble();
+                    Reading reading = new Reading(sensor, measurement); // Adjust constructor as needed
+                    try {
+                        api.addMeasurements(reading);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            redisPublisher.publish("mqtt-data", message);
         });
     }
 
